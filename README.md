@@ -1,0 +1,2 @@
+# Pyisland_toast
+基于pyisland项目的前端设计与后端处理能力，重新打造一款运行在WIndows上的toast小工具，提供相较于Pyisland提供更优秀的动画与性能
