@@ -1,192 +1,125 @@
 import ctypes
 import logging
-import threading
-import time
 from ctypes import wintypes
+from enum import IntEnum
 
 from PySide6.QtCore import QObject, Signal
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = 3
-CPU_THRESHOLD = 80.0
-CONFIRMATIONS_REQUIRED = 2
+EFFECTIVE_POWER_MODE_V2 = 2
+S_OK = 0
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+powrprof = ctypes.WinDLL("PowrProf.dll", use_last_error=True)
 
 
-class FileTime(ctypes.Structure):
-    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+class EffectivePowerMode(IntEnum):
+    """powersetting.h 中 EFFECTIVE_POWER_MODE 的 V2 枚举值。"""
 
-    def value(self) -> int:
-        return (self.high << 32) | self.low
-
-
-class Rect(ctypes.Structure):
-    _fields_ = [
-        ("left", wintypes.LONG),
-        ("top", wintypes.LONG),
-        ("right", wintypes.LONG),
-        ("bottom", wintypes.LONG),
-    ]
+    BATTERY_SAVER = 0
+    BETTER_BATTERY = 1
+    BALANCED = 2
+    HIGH_PERFORMANCE = 3
+    MAX_PERFORMANCE = 4
+    GAME_MODE = 5
+    MIXED_REALITY = 6
 
 
-class MonitorInfo(ctypes.Structure):
-    _fields_ = [
-        ("size", wintypes.DWORD),
-        ("monitor", Rect),
-        ("work", Rect),
-        ("flags", wintypes.DWORD),
-    ]
+HIGH_LOAD_MODES = {
+    EffectivePowerMode.GAME_MODE,
+    EffectivePowerMode.MIXED_REALITY,
+}
 
+EffectivePowerModeCallback = ctypes.WINFUNCTYPE(
+    None,
+    ctypes.c_int,
+    wintypes.LPVOID,
+)
 
-user32.GetForegroundWindow.restype = wintypes.HWND
-user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(Rect)]
-user32.GetWindowRect.restype = wintypes.BOOL
-user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
-user32.MonitorFromWindow.restype = wintypes.HANDLE
-user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
-user32.GetMonitorInfoW.restype = wintypes.BOOL
-kernel32.GetSystemTimes.argtypes = [
-    ctypes.POINTER(FileTime),
-    ctypes.POINTER(FileTime),
-    ctypes.POINTER(FileTime),
+powrprof.PowerRegisterForEffectivePowerModeNotifications.argtypes = [
+    wintypes.ULONG,
+    EffectivePowerModeCallback,
+    wintypes.LPVOID,
+    ctypes.POINTER(wintypes.LPVOID),
 ]
-kernel32.GetSystemTimes.restype = wintypes.BOOL
+powrprof.PowerRegisterForEffectivePowerModeNotifications.restype = ctypes.c_long
+
+powrprof.PowerUnregisterFromEffectivePowerModeNotifications.argtypes = [
+    wintypes.LPVOID,
+]
+powrprof.PowerUnregisterFromEffectivePowerModeNotifications.restype = ctypes.c_long
 
 
-def _system_cpu_usage(previous: tuple[int, int] | None) -> tuple[float, tuple[int, int]] | None:
-    """使用 GetSystemTimes 计算两次采样之间的系统 CPU 使用率。"""
-    idle = FileTime()
-    kernel = FileTime()
-    user = FileTime()
-    if not kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
-        return None
-
-    current_kernel = kernel.value()
-    current_user = user.value()
-    current_idle = idle.value()
-    if previous is None:
-        return None
-
-    previous_total, previous_idle = previous
-    total = (current_kernel + current_user) - previous_total
-    idle_delta = current_idle - previous_idle
-    if total <= 0:
-        return None
-    usage = max(0.0, min(100.0, (total - idle_delta) * 100 / total))
-    return usage, (current_kernel + current_user, current_idle)
-
-
-def _is_fullscreen_foreground() -> bool:
-    """判断当前前台窗口是否覆盖其所在显示器，常用于识别游戏场景。"""
-    hwnd = user32.GetForegroundWindow()
-    if not hwnd:
+def is_high_load_mode(mode: int) -> bool:
+    """判断有效电源模式是否属于游戏或混合现实高负载场景。"""
+    try:
+        return EffectivePowerMode(mode) in HIGH_LOAD_MODES
+    except ValueError:
         return False
-
-    window_rect = Rect()
-    monitor = user32.MonitorFromWindow(hwnd, 2)
-    info = MonitorInfo(size=ctypes.sizeof(MonitorInfo))
-    if not user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
-        return False
-    if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-        return False
-
-    return (
-        window_rect.left <= info.monitor.left
-        and window_rect.top <= info.monitor.top
-        and window_rect.right >= info.monitor.right
-        and window_rect.bottom >= info.monitor.bottom
-    )
-
-
-def is_high_load() -> bool:
-    """返回当前是否可能处于全屏高负载场景。
-
-    单次调用无法计算 CPU 使用率，因此由 HighLoadWatcher 负责采样并判断。
-    这个函数保留为公共检测入口，实际检测使用 _HighLoadSampler。
-    """
-    return _is_fullscreen_foreground()
-
-
-class _HighLoadSampler:
-    def __init__(self):
-        self._previous = None
-
-    def sample(self) -> bool:
-        result = _system_cpu_usage(self._previous)
-        if result is None:
-            idle = FileTime()
-            kernel = FileTime()
-            user = FileTime()
-            if kernel32.GetSystemTimes(
-                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
-            ):
-                self._previous = (kernel.value() + user.value(), idle.value())
-            return False
-
-        usage, self._previous = result
-        return usage >= CPU_THRESHOLD and _is_fullscreen_foreground()
 
 
 class HighLoadWatcher(QObject):
-    """监测全屏高负载场景，并发出进入/退出休眠信号。"""
+    """通过 PowerSetting V2 回调监测游戏模式和混合现实模式。
+
+    注册成功后，Windows 会立即回调当前有效电源模式；后续模式变化时
+    继续回调，因此不需要轮询、CPU 采样或前台窗口判断。
+    """
 
     highLoadEntered = Signal()
     highLoadExited = Signal()
 
-    def __init__(self, interval: int = POLL_INTERVAL, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.interval = interval
-        self._thread: threading.Thread | None = None
-        self._stop_event: threading.Event | None = None
+        self._registration_handle = wintypes.LPVOID()
+        self._callback = EffectivePowerModeCallback(self._on_power_mode_changed)
+        self._started = False
+        self._high_load = False
+
+    @property
+    def current_high_load(self) -> bool:
+        """返回最近一次系统回调报告的高负载状态。"""
+        return self._high_load
 
     def start(self):
-        """启动高负载检测线程。"""
-        if self._thread is not None and self._thread.is_alive():
+        """注册 EFFECTIVE_POWER_MODE_V2 系统通知。"""
+        if self._started:
             return
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="HighLoadWatcher",
-            daemon=True,
+
+        result = powrprof.PowerRegisterForEffectivePowerModeNotifications(
+            EFFECTIVE_POWER_MODE_V2,
+            self._callback,
+            None,
+            ctypes.byref(self._registration_handle),
         )
-        self._thread.start()
+        if result != S_OK:
+            raise OSError(
+                result,
+                "注册有效电源模式通知失败；需要 Windows 10 1903 或更高版本",
+            )
+        self._started = True
 
     def stop(self):
-        """停止高负载检测线程。"""
-        if self._stop_event is not None:
-            self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-        self._thread = None
-        self._stop_event = None
+        """注销有效电源模式通知，并等待系统回调结束。"""
+        if not self._started:
+            return
 
-    def _run(self):
-        sampler = _HighLoadSampler()
-        high_load = False
-        high_count = 0
-        normal_count = 0
+        result = powrprof.PowerUnregisterFromEffectivePowerModeNotifications(
+            self._registration_handle
+        )
+        if result != S_OK:
+            logger.warning("注销有效电源模式通知失败：HRESULT 0x%08X", result & 0xFFFFFFFF)
 
-        while self._stop_event is not None and not self._stop_event.is_set():
-            try:
-                current_high = sampler.sample()
-                if current_high:
-                    high_count += 1
-                    normal_count = 0
-                else:
-                    normal_count += 1
-                    high_count = 0
+        self._registration_handle = wintypes.LPVOID()
+        self._started = False
 
-                if not high_load and high_count >= CONFIRMATIONS_REQUIRED:
-                    high_load = True
-                    self.highLoadEntered.emit()
-                elif high_load and normal_count >= CONFIRMATIONS_REQUIRED:
-                    high_load = False
-                    self.highLoadExited.emit()
-            except Exception:
-                logger.exception("高负载状态检测失败")
+    def _on_power_mode_changed(self, mode: int, _context):
+        """接收 Windows 回调，仅在高负载状态发生变化时发出 Qt 信号。"""
+        high_load = is_high_load_mode(mode)
+        if high_load == self._high_load:
+            return
 
-            if self._stop_event.wait(self.interval):
-                break
+        self._high_load = high_load
+        if high_load:
+            self.highLoadEntered.emit()
+        else:
+            self.highLoadExited.emit()

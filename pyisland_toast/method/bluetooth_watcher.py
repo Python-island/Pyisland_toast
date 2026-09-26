@@ -9,7 +9,7 @@ from pyisland_toast.method.bluetooth_devices import (
     get_connected_devices,
 )
 
-POLL_INTERVAL = 5
+POLL_INTERVAL = 3   # 轮询间隔（秒）
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +29,12 @@ class BluetoothDeviceWatcher(QObject):
 
     蓝牙库暴露的是 asyncio API，而 UI 运行在 Qt 事件循环中。
     这里在守护线程中运行独立 asyncio 循环，并通过 Qt 信号安全通知主线程。
+
+    工作原理：
+    - 首次轮询只建立"已连接设备"基线，不触发任何 toast
+      （否则应用启动时所有已连设备都会弹通知）
+    - 之后每轮把当前已连设备集合与基线对比，新增的设备即为新连接设备，
+      通过 deviceConnected 信号把设备名发给主线程
     """
 
     deviceConnected = Signal(str)
@@ -36,9 +42,9 @@ class BluetoothDeviceWatcher(QObject):
     def __init__(self, interval: int = POLL_INTERVAL, parent=None):
         super().__init__(parent)
         self.interval = interval
-        self._thread = None
-        self._loop = None
-        self._stop_event = None
+        self._thread = None           # 后台轮询线程
+        self._loop = None             # 线程内的 asyncio 事件循环
+        self._stop_event = None       # 停止信号
 
     def start(self):
         """启动后台轮询线程，重复调用不会重复启动。"""
@@ -73,7 +79,7 @@ class BluetoothDeviceWatcher(QObject):
 
     async def _watch(self):
         """轮询设备，与上一轮快照比较，并发出新增连接事件。"""
-        known_ids = None
+        known_ids = None   # 已知设备 ID 集合，None 表示尚未建立基线
 
         while not self._stop_event.is_set():
             try:
@@ -85,6 +91,7 @@ class BluetoothDeviceWatcher(QObject):
                     # 首次轮询只建立基线。应用启动前已经连接的设备不应触发 toast。
                     known_ids = current_ids
                 else:
+                    # 计算本轮新增的设备 ID，逐个发出连接通知
                     new_ids = current_ids - known_ids
                     for snapshot in snapshots:
                         if snapshot.id in new_ids:
@@ -96,5 +103,6 @@ class BluetoothDeviceWatcher(QObject):
                 else:
                     logger.warning("Bluetooth device poll failed: %s", exc)
 
+            # 等待 interval 秒，若在此期间收到停止信号则立即退出
             if self._stop_event.wait(self.interval):
                 break
