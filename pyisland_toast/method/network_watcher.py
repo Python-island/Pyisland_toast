@@ -4,6 +4,7 @@ import re
 import socket
 import struct
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 
@@ -56,11 +57,15 @@ def _get_wifi_ssid() -> str | None:
     未连接 Wi-Fi 或命令执行失败时返回 None。
     """
     try:
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         result = subprocess.run(
             ["netsh", "wlan", "show", "interfaces"],
             capture_output=True,
             timeout=DNS_TIMEOUT,
             check=False,
+            **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
