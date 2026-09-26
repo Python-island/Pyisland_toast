@@ -24,3 +24,12 @@ toast_frontend/frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local AI settings; may contain an API key
+pyisland_toast/ai_config.json
+
+# PyInstaller output
+/dist/
+
+# Local Windows-MCP checkout. The app launches the installed command instead.
+pyisland_toast/Windows-MCP/

@@ -7,10 +7,37 @@ name = "pyisland-toast"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-    "pigar>=2.2.0",
     "pyside6>=6.11.2",
+    "qasync>=0.28,<0.29",
+    "win11toast>=0.36.3",
     "windows-bluetooth-watcher",
+    "winrt-windows-foundation>=3,<4",
+    "winrt-windows-foundation-collections>=3,<4",
+    "winrt-windows-ui-notifications>=3,<4",
+    "winrt-windows-ui-notifications-management>=3,<4",
 ]
 
 [project.scripts]
 pyisland-toast = "pyisland_toast.app:main"
+
+[dependency-groups]
+dev = [
+    "pigar>=2.2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+only-include = ["pyisland_toast"]
+exclude = [
+    "/pyisland_toast/Windows-MCP",
+    "/pyisland_toast/bluetooth",
+    "/pyisland_toast/ai_config.json",
+    "/pyisland_toast/img",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/pyisland_toast/Windows-MCP",
+    "/pyisland_toast/bluetooth",
+    "/pyisland_toast/ai_config.json",
+    "/pyisland_toast/img",
+]

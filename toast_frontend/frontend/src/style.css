@@ -1,3 +1,5 @@
+/* 全局样式：让 html/body/#app 撑满整个窗口且背景透明，
+   这样 Qt 窗口的透明属性才能透出到桌面。 */
 html,
 body,
 #app {
@@ -17,5 +19,5 @@ body {
   font-family: system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  user-select: none;
+  user-select: none;   /* 禁止文本选择，toast 是通知不是交互内容 */
 }

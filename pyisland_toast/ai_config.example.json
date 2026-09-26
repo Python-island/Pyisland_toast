@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "provider": "openai-compatible",
+  "base_url": "https://api.deepseek.com",
+  "api_key": "",
+  "model": "deepseek-flash",
+  "system_prompt": "你是一个电脑助手，当用户询问你问题的时候，请用简短的话回答用户的问题。",
+  "temperature": 0.7,
+  "top_p": 1.0,
+  "max_tokens": 2048,
+  "timeout_seconds": 60,
+  "extra_headers": {},
+  "windows_mcp_command": "",
+  "windows_mcp_exclude_tools": "Registry,Process,Screenshot"
+}
